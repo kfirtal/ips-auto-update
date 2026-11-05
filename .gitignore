@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+config.json
+*.upf
+*.pem
+*.key
+id_*
+known_hosts
+logs/
+reports/

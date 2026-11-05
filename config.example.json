@@ -1,0 +1,15 @@
+{
+  "package_path": "packages/example.upf",
+  "known_hosts": "known_hosts",
+  "ssh_username": "lab-operator",
+  "ssh_key_path": "keys/lab_ed25519",
+  "ca_bundle": null,
+  "servers": [
+    {
+      "name": "lab-management-01",
+      "host": "management.example.invalid",
+      "api_key_env": "IPS_LAB_API_KEY",
+      "remote_path": "/var/log/portfolio-ips-update.upf"
+    }
+  ]
+}
