@@ -1,4 +1,4 @@
-# IPS Auto Update for Air-Gapped Environments
+# IPS Auto Update for Air Gapped Environments
 
 I built this project to replace repetitive manual IPS updates across multiple Check Point management servers in an air-gapped environment.
 
