@@ -1,4 +1,4 @@
-# IPS Auto Update — Air-Gapped Workflow
+# IPS Auto Update - Air-Gapped Workflow
 
 **Python orchestration for offline Check Point IPS updates across management servers.**
 
