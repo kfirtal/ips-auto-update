@@ -34,17 +34,22 @@ These paths are examples. This project does not currently provide a dependency l
 
 ## Configure the script
 
-Keep the public copy populated with placeholders. Configure a separate private deployment copy:
+All deployment settings are grouped in the **CONFIGURATION: EDIT HERE** section near the top of `ipsupdate.py`: package paths, SSH access, timing settings, then servers and API keys. Keep the public copy populated with placeholders and edit only a separate private deployment copy.
 
 | Setting | What to configure |
 | --- | --- |
-| `folder` | Local directory containing approved UPF packages |
+| `LOCAL_UPDATE_FOLDER` | Local directory containing approved UPF packages; may also be shared with users over SMB |
 | `REMOTE_SERVER_PATH` | Remote upload path accessible to the SSH account and update process |
 | `API_KEY_1` through `API_KEY_6` | API keys for the corresponding management servers |
 | `SERVERS` | Management addresses and corresponding keys; adjust the list as needed |
-| `username` in both SFTP functions | SSH account on the management servers; currently `backup` |
-| `key_filename` in both SFTP functions | Absolute path to the Windows task account's private SSH key |
-| `wait_for_task(..., timeout=1800)` | Waiting period for each update or publish task; default 30 minutes |
+| `SSH_USERNAME` | SSH account on all management servers; currently `backup`; used by both SFTP functions |
+| `SSH_PRIVATE_KEY_PATH` | Absolute path to the Windows task account's private SSH key; used by both SFTP functions |
+| `HTTP_CONNECT_TIMEOUT` | Connection timeout in seconds; default 10 |
+| `HTTP_READ_TIMEOUT` | Read timeout in seconds; default 60 |
+| `TASK_WAIT_TIMEOUT` | Waiting period per update or publish task in seconds; default 1800 (30 minutes) |
+| `TASK_POLL_INTERVAL` | Pause between task-status requests in seconds; default 5 |
+
+Use positive timing values. `LOCAL_FILE_PATH` is calculated automatically from the newest UPF file; do not configure it manually. The weekly day and time are configured in Task Scheduler, not in these variables.
 
 ## Configure SSH keys
 
@@ -70,7 +75,7 @@ Microsoft documents key generation and protection in its [OpenSSH key-management
 
 ### 2. Plan unattended access
 
-The script loads the file specified by `key_filename` and does not supply a key passphrase. A passphrase-protected key therefore needs a separately validated noninteractive loading arrangement or a code change before scheduling. An interactive terminal's agent setup must not be assumed to work in a scheduled task.
+The script loads the file specified by `SSH_PRIVATE_KEY_PATH` and does not supply a key passphrase. A passphrase-protected key therefore needs a separately validated noninteractive loading arrangement or a code change before scheduling. An interactive terminal's agent setup must not be assumed to work in a scheduled task.
 
 If your organization permits a dedicated automation key without a passphrase, select an empty passphrase when prompted and restrict the private key's Windows file permissions to the task account and authorized administrators. Never commit the private key or a populated deployment script.
 
@@ -115,7 +120,7 @@ Replace the example host and user, and verify the host fingerprint through a tru
 sftp -o BatchMode=yes -i "$env:USERPROFILE\.ssh\ips_update_ed25519" backup@management.example.invalid
 ```
 
-This checks unattended key authentication and SFTP access without starting an IPS update. Check that the chosen account can access the configured upload directory. Update `key_filename` in **both** SFTP functions to the actual absolute private-key path. Paramiko is a different client from Windows OpenSSH, so a successful SFTP command is a prerequisite check, not proof that the full Python workflow will succeed.
+This checks unattended key authentication and SFTP access without starting an IPS update. Check that the chosen account can access the configured upload directory. Set `SSH_PRIVATE_KEY_PATH` once in the configuration section to the actual absolute private-key path; both SFTP functions use it. Paramiko is a different client from Windows OpenSSH, so a successful SFTP command is a prerequisite check, not proof that the full Python workflow will succeed.
 
 ## Configure the weekly Windows task
 

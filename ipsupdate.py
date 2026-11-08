@@ -25,30 +25,30 @@ import paramiko
 import time
 from datetime import datetime
 
-now = datetime.now()
-print("\n" * 5)
-print(80 * "=")
-print(f"Run date and time: {now}")
-print(80 * "=")
-# Select the most recently modified UPF file from the local update folder.
-# This folder can also be shared over SMB so authorized users can upload
-# approved UPF packages without logging in to the server running this script.
+# ==================== CONFIGURATION: EDIT HERE ====================
+# 1. Package paths
+# Local UPF folder on the automation host. It can be shared over SMB so
+# authorized users can upload approved packages without logging in to the host.
 # Finish copying each package before the scheduled run starts.
-folder = Path(r"C:/Services/IPS_AutoUpdate/IPS_FILE")
-upf_files = [f for f in folder.glob("*.upf") if f.is_file()]
-
-if not upf_files:
-    raise SystemExit("No UPF files found in the update folder.")
-
-latest_file = max(upf_files, key=lambda f: f.stat().st_mtime)
-print(f"Latest File is: {latest_file}")
-
-
-LOCAL_FILE_PATH = latest_file
-# Configure the remote upload path and management servers.
+LOCAL_UPDATE_FOLDER = Path(r"C:/Services/IPS_AutoUpdate/IPS_FILE")
+# Full destination filename on each management server, not a directory.
 REMOTE_SERVER_PATH = "/var/log/sd_updates_new.upf"
 
+# 2. SSH access (shared by both upload and removal)
+# Account on the management servers; its login shell must be /bin/bash.
+SSH_USERNAME = "backup"
+# Absolute private-key path readable by the Windows scheduled-task account.
+SSH_PRIVATE_KEY_PATH = r"C:/Users/svc_automation/.ssh/id_ed25519"
 
+# 3. Timing settings (positive values, in seconds)
+HTTP_CONNECT_TIMEOUT = 10
+HTTP_READ_TIMEOUT = 60
+TASK_WAIT_TIMEOUT = 1800  # 30 minutes for each update or publish task.
+TASK_POLL_INTERVAL = 5   # Pause between task-status requests.
+
+# 4. Management servers and API keys
+# Replace placeholders only in your private deployment copy.
+# Match each server address with its own API key; add/remove entries as needed.
 API_KEY_1 = "<API-KEY>"
 API_KEY_2 = "<API-KEY>"
 API_KEY_3 = "<API-KEY>"
@@ -64,6 +64,21 @@ SERVERS = [
     {"ip": "<ServerManagement5_IP>", "api_key": API_KEY_5},
     {"ip": "<ServerManagement6_IP>", "api_key": API_KEY_6}
 ]
+# ==================== END OF CONFIGURATION ====================
+
+now = datetime.now()
+print("\n" * 5)
+print(80 * "=")
+print(f"Run date and time: {now}")
+print(80 * "=")
+
+# Calculated automatically from the configured folder; do not edit this section.
+upf_files = [f for f in LOCAL_UPDATE_FOLDER.glob("*.upf") if f.is_file()]
+if not upf_files:
+    raise SystemExit("No UPF files found in the update folder.")
+latest_file = max(upf_files, key=lambda f: f.stat().st_mtime)
+print(f"Latest File is: {latest_file}")
+LOCAL_FILE_PATH = latest_file
 
 
 def sftp_upload(ip, local_path, remote_path):
@@ -77,8 +92,8 @@ def sftp_upload(ip, local_path, remote_path):
         print(f"Connecting to {ip} with SFTP...")
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(ip, username="backup",
-                    key_filename='C:/Users/svc_automation/.ssh/id_ed25519')
+        ssh.connect(ip, username=SSH_USERNAME,
+                    key_filename=SSH_PRIVATE_KEY_PATH)
         sftp = ssh.open_sftp()
         sftp.put(local_path, remote_path)
         print(f"The file successfully transfer to {remote_path}")
@@ -110,8 +125,8 @@ def sftp_remove(ip, remote_path):
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(ip, username="backup",
-                    key_filename='C:/Users/svc_automation/.ssh/id_ed25519')
+        ssh.connect(ip, username=SSH_USERNAME,
+                    key_filename=SSH_PRIVATE_KEY_PATH)
         sftp = ssh.open_sftp()
         print(f"Delete {remote_path} from server {ip}")
         sftp.remove(remote_path)
@@ -134,8 +149,8 @@ def sftp_remove(ip, remote_path):
                 print(f"SSH close failed: {e}")
 
 
-def wait_for_task(ip, sid, task_id, timeout=1800):
-    """Poll a management API task every five seconds until it finishes or times out.
+def wait_for_task(ip, sid, task_id, timeout=TASK_WAIT_TIMEOUT):
+    """Poll a management API task at the configured interval until completion or timeout.
 
     Return True when the task succeeds.
     Return False when it fails, returns an empty task list, or exceeds the
@@ -161,7 +176,7 @@ def wait_for_task(ip, sid, task_id, timeout=1800):
         elif status == "failed":
             print(f"The task failed: {task_info[0]['comments']}")
             return False
-        time.sleep(min(5, max(0, deadline - time.monotonic())))
+        time.sleep(min(TASK_POLL_INTERVAL, max(0, deadline - time.monotonic())))
     print("Task wait timed out; remote task may still be running.")
     return False
 
@@ -170,13 +185,13 @@ def api_call(ip, command, payload, sid=None):
     """Send a POST request to a Check Point management API endpoint.
 
     Include the session ID when provided and return the HTTP response.
-    Use a 10-second connection timeout and a 60-second read timeout.
+    Use the connection and read timeouts from the configuration section.
     HTTPS certificate verification is disabled in this implementation."""
     url = f"https://{ip}/web_api/{command}"
     headers = {'Content-Type': 'application/json'}
     if sid:
         headers['X-chkp-sid'] = sid
-    response = requests.post(url, json=payload, headers=headers, verify=False, timeout=(10, 60))
+    response = requests.post(url, json=payload, headers=headers, verify=False, timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT))
     return response
 
 
