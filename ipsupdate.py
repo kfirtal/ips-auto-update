@@ -31,6 +31,9 @@ print(80 * "=")
 print(f"Run date and time: {now}")
 print(80 * "=")
 # Select the most recently modified UPF file from the local update folder.
+# This folder can also be shared over SMB so authorized users can upload
+# approved UPF packages without logging in to the server running this script.
+# Finish copying each package before the scheduled run starts.
 folder = Path(r"C:/Services/IPS_AutoUpdate/IPS_FILE")
 upf_files = [f for f in folder.glob("*.upf") if f.is_file()]
 
