@@ -36,9 +36,9 @@ REMOTE_SERVER_PATH = "/var/log/sd_updates_new.upf"
 
 # 2. SSH access (shared by both upload and removal)
 # Account on the management servers; its login shell must be /bin/bash.
-SSH_USERNAME = "backup"
+SSH_USERNAME = "Automation_usr"
 # Absolute private-key path readable by the Windows scheduled-task account.
-SSH_PRIVATE_KEY_PATH = r"C:/Users/svc_automation/.ssh/id_ed25519"
+SSH_PRIVATE_KEY_PATH = r"C:/Users/automation_usr/.ssh/id_ed25519"
 
 # 3. Timing settings (positive values, in seconds)
 HTTP_CONNECT_TIMEOUT = 10
