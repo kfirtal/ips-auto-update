@@ -1,168 +1,296 @@
-"""Sanitized portfolio adaptation. Dry run by default; no work at import time."""
-import argparse
-import hashlib
-import json
-import logging
-import os
-from pathlib import Path, PurePosixPath
-import re
+"""
+IPS Auto Update for Air-Gapped Environments
+
+I built this project to replace repetitive manual IPS updates across
+multiple Check Point management servers in an air-gapped environment.
+
+The script uploads a locally available UPF package to each server,
+runs the IPS update, publishes the changes, and reports the results.
+
+It is intended to run automatically once a week through Windows Task
+Scheduler. An approved update package must be placed in the configured
+local folder before the scheduled run.
+
+SSH key-based authentication must be configured between the Windows
+account running the scheduled task and the SSH account on each
+management server. The script also requires a management API key
+for each server.
+
+The script does not download update packages or install gateway policy.
+"""
+
+import requests
+from pathlib import Path
+import paramiko
 import time
+from datetime import datetime
 
-LOG = logging.getLogger('ips-update')
-COMMANDS = {'login', 'run-ips-update', 'show-task', 'publish', 'logout'}
+now = datetime.now()
+print("\n" * 5)
+print(80 * "=")
+print(f"Run date and time: {now}")
+print(80 * "=")
+# Select the most recently modified UPF file from the local update folder.
+folder = Path(r"C:/Services/IPS_AutoUpdate/IPS_FILE")
+upf_files = [f for f in folder.glob("*.upf") if f.is_file()]
 
+if not upf_files:
+    raise SystemExit("No UPF files found in the update folder.")
 
-def load_config(path):
-    config = json.loads(Path(path).read_text(encoding='utf-8'))
-    required = {'package_path', 'known_hosts', 'ssh_username', 'ssh_key_path', 'servers'}
-    if not isinstance(config, dict) or not required <= config.keys():
-        raise ValueError('Missing configuration fields')
-    for field in required - {'servers'}:
-        if not isinstance(config[field], str) or not config[field].strip():
-            raise ValueError('Invalid configuration field')
-    if not isinstance(config['servers'], list) or not config['servers']:
-        raise ValueError('At least one server is required')
-    if config.get('ca_bundle') is not None and not isinstance(config['ca_bundle'], str):
-        raise ValueError('Invalid CA bundle')
-    names, hosts = set(), set()
-    for server in config['servers']:
-        if not isinstance(server, dict):
-            raise ValueError('Invalid server entry')
-        for field in ('name', 'host', 'api_key_env', 'remote_path'):
-            if not isinstance(server.get(field), str) or not server[field].strip():
-                raise ValueError('Invalid server field')
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', server['host']):
-            raise ValueError('Use a hostname or IPv4 address without URL components')
-        if not re.fullmatch(r'[A-Za-z0-9_-]+', server['name']):
-            raise ValueError('Use a simple non-sensitive server alias')
-        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', server['api_key_env']):
-            raise ValueError('Invalid environment variable name')
-        remote = PurePosixPath(server['remote_path'])
-        if remote.parent != PurePosixPath('/var/log') or remote.suffix.lower() != '.upf':
-            raise ValueError('Remote package must be an explicit /var/log/*.upf path')
-        if server['name'] in names or server['host'] in hosts:
-            raise ValueError('Duplicate server alias or host')
-        names.add(server['name']); hosts.add(server['host'])
-    return config
+latest_file = max(upf_files, key=lambda f: f.stat().st_mtime)
+print(f"Latest File is: {latest_file}")
 
 
-def api_call(session, host, command, payload, sid=None, verify=True):
-    if command not in COMMANDS:
-        raise ValueError('Unsupported command')
-    response = session.post(f'https://{host}/web_api/{command}', json=payload,
-                            headers={'X-chkp-sid': sid} if sid else {},
-                            verify=verify, timeout=(10, 60), allow_redirects=False)
-    if not 200 <= response.status_code < 300:
-        raise RuntimeError('Management API rejected request')
-    result = response.json()
-    if not isinstance(result, dict):
-        raise RuntimeError('Unexpected API response')
+LOCAL_FILE_PATH = latest_file
+# Configure the remote upload path and management servers.
+REMOTE_SERVER_PATH = "/var/log/sd_updates_new.upf"
+
+
+API_KEY_1 = "<API-KEY>"
+API_KEY_2 = "<API-KEY>"
+API_KEY_3 = "<API-KEY>"
+API_KEY_4 = "<API-KEY>"
+API_KEY_5 = "<API-KEY>"
+API_KEY_6 = "<API-KEY>"
+
+SERVERS = [
+    {"ip": "<ServerManagement1_IP>", "api_key": API_KEY_1},
+    {"ip": "<ServerManagement2_IP>", "api_key": API_KEY_2},
+    {"ip": "<ServerManagement3_IP>", "api_key": API_KEY_3},
+    {"ip": "<ServerManagement4_IP>", "api_key": API_KEY_4},
+    {"ip": "<ServerManagement5_IP>", "api_key": API_KEY_5},
+    {"ip": "<ServerManagement6_IP>", "api_key": API_KEY_6}
+]
+
+
+def sftp_upload(ip, local_path, remote_path):
+    """Upload the local update package to a management server using SFTP.
+
+    Return True if the upload succeeds, otherwise False.
+    Always attempt to close any SFTP and SSH connections that were opened."""
+    ssh = None
+    sftp = None
+    try:
+        print(f"Connecting to {ip} with SFTP...")
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, username="backup",
+                    key_filename='C:/Users/svc_automation/.ssh/id_ed25519')
+        sftp = ssh.open_sftp()
+        sftp.put(local_path, remote_path)
+        print(f"The file successfully transfer to {remote_path}")
+        return True
+    except Exception as e:
+        print(f"Error on transfer: {e}")
+        return False
+
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception as e:
+                print(f"SFTP close failed: {e}")
+        if ssh is not None:
+            try:
+                ssh.close()
+            except Exception as e:
+                print(f"SSH close failed: {e}")
+
+
+def sftp_remove(ip, remote_path):
+    """Remove the uploaded update package from a management server.
+
+    Return True if removal succeeds, otherwise False.
+    Always attempt to close any SFTP and SSH connections that were opened."""
+    ssh = None
+    sftp = None
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, username="backup",
+                    key_filename='C:/Users/svc_automation/.ssh/id_ed25519')
+        sftp = ssh.open_sftp()
+        print(f"Delete {remote_path} from server {ip}")
+        sftp.remove(remote_path)
+        print(f"The file successfully remove from {remote_path}")
+        return True
+    except Exception as e:
+        print(f"Error on removing: {e}")
+        return False
+
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception as e:
+                print(f"SFTP close failed: {e}")
+        if ssh is not None:
+            try:
+                ssh.close()
+            except Exception as e:
+                print(f"SSH close failed: {e}")
+
+
+def wait_for_task(ip, sid, task_id, timeout=1800):
+    """Poll a management API task every five seconds until it finishes or times out.
+
+    Return True when the task succeeds.
+    Return False when it fails, returns an empty task list, or exceeds the
+    waiting period, which defaults to 30 minutes.
+
+    A timeout does not cancel the remote task. API or response-processing
+    errors may propagate to the calling function."""
+    print(f"Wait for task {task_id}...")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        task_res = api_call(ip, "show-task", {"task-id": task_id}, sid)
+
+        task_list = task_res.json()["tasks"]
+        if not task_list:
+            print("No data")
+            return False
+        task_info = task_list
+        status = task_info[0]["status"]
+        progress = task_info[0]["progress-percentage"]
+        print(f"Upload Status: {status} ({progress}%)")
+        if status == "succeeded":
+            return True
+        elif status == "failed":
+            print(f"The task failed: {task_info[0]['comments']}")
+            return False
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    print("Task wait timed out; remote task may still be running.")
+    return False
+
+
+def api_call(ip, command, payload, sid=None):
+    """Send a POST request to a Check Point management API endpoint.
+
+    Include the session ID when provided and return the HTTP response.
+    Use a 10-second connection timeout and a 60-second read timeout.
+    HTTPS certificate verification is disabled in this implementation."""
+    url = f"https://{ip}/web_api/{command}"
+    headers = {'Content-Type': 'application/json'}
+    if sid:
+        headers['X-chkp-sid'] = sid
+    response = requests.post(url, json=payload, headers=headers, verify=False, timeout=(10, 60))
+    return response
+
+
+def process_server_update(server_info):
+    """Run the upload, login, IPS update, publish, and cleanup workflow for one server.
+
+    Wait for both the update and publish tasks before removing the package.
+    Attempt API logout when leaving the update/publish section.
+
+    Return a result dictionary containing the overall status, the last stage
+    reached, and the package cleanup and logout results."""
+    result = {'status': 'FAILED', 'stage': 'upload', 'cleanup': 'not attempted', 'logout': 'not attempted'}
+    ip = server_info['ip']
+    api_key = server_info['api_key']
+
+    print(f"\n>>> Start process for server: {ip}")
+    # Upload the update package before starting the API workflow.
+    if not sftp_upload(ip, LOCAL_FILE_PATH, REMOTE_SERVER_PATH):
+        return result
+
+
+    # Authenticate and retrieve the API session ID.
+    result['stage'] = 'login'
+    try:
+        login_res = api_call(ip, "login", {"api-key": api_key})
+    except requests.exceptions.RequestException:
+        print(f"Login connection failed for server: {ip}")
+        return result
+    if login_res.status_code != 200:
+        print(f"Login failed to {ip}: {login_res.text}")
+        return result
+    sid = login_res.json().get("sid")
+
+    if not isinstance(sid, str) or not sid.strip():
+        print("Login failed: no valid session ID received.")
+        return result
+
+    print("Login successful.")
+    try:
+
+
+        # Start the offline IPS update and wait for completion.
+        result['stage'] = 'IPS update'
+        update_payload = {"package-path": REMOTE_SERVER_PATH}
+        print(f"run update IPS Offline {ip}...")
+        update_res = api_call(ip, "run-ips-update", update_payload, sid)
+        if update_res.status_code == 200:
+            task_id = update_res.json()["task-id"]
+            print(f"The updated started.")
+        else:
+            print(f"Update command failed on {ip}: {update_res.text}")
+            return result
+        if not wait_for_task(ip, sid, task_id):
+            return result
+
+        print(f"Publish in process on : {ip}...")
+        # Publish the changes and wait for completion.
+        result['stage'] = 'publish'
+        publish_res = api_call(ip, "publish", {}, sid)
+        if publish_res.status_code != 200:
+            print(f"Publish failed on : {ip}")
+            return result
+        publish_task_id = publish_res.json()["task-id"]
+        if not wait_for_task(ip, sid, publish_task_id):
+            return result
+        result['status'] = 'SUCCESS'
+        result['stage'] = 'completed'
+        # Remove the uploaded package only after update and publish succeed.
+        if sftp_remove(ip, REMOTE_SERVER_PATH):
+            result['cleanup'] = 'success'
+        else:
+            result['cleanup'] = 'failed'
+            result['status'] = 'WARNING'
+            print(f"Update and publish succeeded, but package cleanup failed on {ip}")
+
+
+    except Exception as e:
+        print(f"occur Unexpected error {ip}: {e}")
+    finally:
+
+        try:
+            # Attempt logout even if the update or publish operation fails.
+            logout_res = api_call(ip, "logout", {}, sid)
+
+            if logout_res.status_code == 200:
+                result['logout'] = 'success'
+                print(f"Logout complete {ip}.")
+            else:
+                result['logout'] = 'failed'
+                print(f"Logout failed for server: {ip}")
+
+        except requests.exceptions.RequestException:
+            result['logout'] = 'failed'
+            print(f"Logout connection failed for server: {ip}")
+
+        if result['logout'] == 'failed' and result['status'] == 'SUCCESS':
+            result['status'] = 'WARNING'
     return result
 
 
-def wait_for_task(call, task_id, timeout=900, interval=5, clock=time.monotonic, sleep=time.sleep):
-    if not isinstance(task_id, str) or not task_id.strip():
-        raise RuntimeError('Missing task identifier')
-    deadline = clock() + timeout
-    while clock() < deadline:
-        tasks = call('show-task', {'task-id': task_id}).get('tasks')
-        if not isinstance(tasks, list) or not tasks or not all(isinstance(t, dict) for t in tasks):
-            raise RuntimeError('Missing task information')
-        statuses = [task.get('status') for task in tasks]
-        if any(status not in ('succeeded', 'failed', 'in progress') for status in statuses):
-            raise RuntimeError('Unrecognized task status')
-        if 'failed' in statuses:
-            raise RuntimeError('Remote task failed')
-        if all(status == 'succeeded' for status in statuses):
-            return
-        sleep(min(interval, max(0, deadline - clock())))
-    raise TimeoutError('Task polling exceeded deadline; verify remote state before retry')
+if __name__ == "__main__":
 
+    requests.packages.urllib3.disable_warnings()
 
-def process_server(config, server):
-    import paramiko
-    import requests
-    key = os.environ.get(server['api_key_env'])
-    if not key:
-        raise ValueError('Required API key environment variable is missing')
-    verify = config.get('ca_bundle') or True
-    ssh = paramiko.SSHClient()
-    ssh.load_host_keys(config['known_hosts'])
-    ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
-    sid = None
-    with requests.Session() as session:
-        session.trust_env = False
+    # Process servers sequentially and collect their results.
+    results = []
+    for server in SERVERS:
         try:
-            ssh.connect(server['host'], username=config['ssh_username'],
-                        key_filename=config['ssh_key_path'], look_for_keys=False,
-                        allow_agent=False, timeout=15, auth_timeout=15, banner_timeout=15)
-            with ssh.open_sftp() as sftp:
-                sftp.get_channel().settimeout(60)
-                # Refuse overwriting an existing package at the chosen path.
-                with sftp.open(server['remote_path'], 'wx') as target:
-                    with open(config['package_path'], 'rb') as source:
-                        while chunk := source.read(1024 * 1024):
-                            target.write(chunk)
-            sid = api_call(session, server['host'], 'login', {'api-key': key}, verify=verify).get('sid')
-            if not isinstance(sid, str) or not sid:
-                raise RuntimeError('Login response did not contain a session')
-            def call(command, payload):
-                return api_call(session, server['host'], command, payload, sid, verify)
-            update = call('run-ips-update', {'package-path': server['remote_path']})
-            wait_for_task(call, update.get('task-id'))
-            publish = call('publish', {})
-            wait_for_task(call, publish.get('task-id'))
-            with ssh.open_sftp() as sftp:
-                sftp.get_channel().settimeout(60)
-                sftp.remove(server['remote_path'])
-            LOG.info('%s: update and publish completed; staged package removed', server['name'])
-        finally:
-            if sid:
-                try:
-                    api_call(session, server['host'], 'logout', {}, sid, verify)
-                except Exception:
-                    LOG.warning('%s: logout failed; check session state', server['name'])
-            ssh.close()
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', default='config.example.json')
-    parser.add_argument('--execute', action='store_true', help='Explicitly permit remote updates')
-    parser.add_argument('--expected-sha256', help='Trusted independently obtained package digest')
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
-    try:
-        config = load_config(args.config)
-        if not args.execute:
-            for server in config['servers']:
-                LOG.info('DRY RUN %s: upload -> update -> poll -> publish -> poll -> cleanup -> logout', server['name'])
-            LOG.info('No network calls or package reads performed')
-            return 0
-        if not args.expected_sha256 or not re.fullmatch(r'[a-fA-F0-9]{64}', args.expected_sha256):
-            raise ValueError('Execution requires a trusted SHA-256 digest')
-        package = Path(config['package_path'])
-        if not package.is_file() or package.suffix.lower() != '.upf':
-            raise ValueError('Select an explicit UPF package')
-        with package.open('rb') as stream:
-            actual = hashlib.file_digest(stream, 'sha256').hexdigest()
-        if actual != args.expected_sha256.lower():
-            raise ValueError('Package digest mismatch')
-        for field in ('known_hosts', 'ssh_key_path'):
-            if not Path(config[field]).is_file():
-                raise ValueError('SSH trust or key file unavailable')
-        if config.get('ca_bundle') and not Path(config['ca_bundle']).is_file():
-            raise ValueError('CA bundle unavailable')
-        if any(not os.environ.get(s['api_key_env']) for s in config['servers']):
-            raise ValueError('Required API key environment variable is missing')
-        for server in config['servers']:
-            process_server(config, server)
-        return 0
-    except Exception as exc:
-        # Do not log exception text, response bodies, API keys, session IDs or hosts.
-        LOG.error('Run stopped (%s). Check remote state before retrying.', type(exc).__name__)
-        return 1
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())
+            result = process_server_update(server)
+        except Exception as e:
+            print(f"Server processing failed: {e}")
+            result = {'status': 'FAILED', 'stage': 'unexpected error',
+                      'cleanup': 'unknown', 'logout': 'unknown'}
+        results.append((server['ip'], result))
+    # Print the final result for each management server.
+    print("\n--- Run summary ---")
+    for ip, result in results:
+        print(f"{ip}: {result['status']} | Stage: {result['stage']} | "
+              f"Cleanup: {result['cleanup']} | Logout: {result['logout']}")
+    print("\n--- The script end ---")
